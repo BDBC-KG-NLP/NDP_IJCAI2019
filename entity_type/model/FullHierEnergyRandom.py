@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-
 import tensorflow as tf
 from base_model import Model
 import numpy as np
@@ -50,7 +48,6 @@ class FullHierEnergyRandom(Model):
     self.type_path_embedding = tf.reduce_sum(self.type_path_embedding,1)
     
     self.type_embeddings_norm  = tf.nn.l2_normalize(self.type_path_embedding,-1)
-    
     self.type_embeddings_norm_add_padding = tf.concat([self.type_embeddings_norm,tf.constant([[0.0]*self.args.type_dim])],0)
     
     if self.args.is_training == True:
@@ -60,12 +57,13 @@ class FullHierEnergyRandom(Model):
             name="train_type_weight_l1",
             dtype = tf.float32   
       )
-      self.train_type_weight_l2 = tf.Variable(   
+      with tf.device('/gpu:1'):
+        self.train_type_weight_l2 = tf.Variable(   
             initial_value = tf.truncated_normal([self.training_data_nums,self.args.max_pos_type_l1,self.args.max_pos_type_l2],stddev=0.01),
             trainable=True,
             name="train_type_weight_l2",
             dtype = tf.float32   
-      )
+        )
       
       if self.type_tree.hieral_layer==3:
         self.train_type_weight_l3 = tf.Variable(   
@@ -82,7 +80,7 @@ class FullHierEnergyRandom(Model):
     
     self.ent_ctx_t1 = tf.nn.l2_normalize(tf.layers.dense(self.ent_ctx_feature,self.args.type_dim,tf.nn.relu),-1) 
     self.ent_w = tf.expand_dims(self.ent_ctx_t1,1)  #(batch_size,1,type_dims)  
-    
+
     self.ent_w_all_type = tf.einsum('aij,jk->aik',self.ent_w,  #(batch_size,class_size)
                                     tf.transpose(self.type_embeddings_norm,[1,0]))[:,0,:]
     self.prediction = self.ent_w_all_type
@@ -95,21 +93,17 @@ class FullHierEnergyRandom(Model):
       self.neg_types_embed = tf.nn.embedding_lookup(self.type_embeddings_norm_add_padding,self.neg_types)
       
       #get weight a_norm
-      if self.type_tree.hieral_layer==3:
+      if self.type_tree.hieral_layer==3 :
         self.a_norm = self._get_type_weight_2()
       else:
         self.a_norm = self._get_type_weight()
       
-      #self.pos_types_a = tf.einsum('aij,ajk->aik',tf.transpose(self.pos_types_embed,[0,2,1]),
-      #                                         tf.expand_dims(self.a_norm,-1))[:,:,0]
+      self.pos_types_a = tf.einsum('aij,ajk->aik',tf.transpose(self.pos_types_embed,[0,2,1]),
+                                               tf.expand_dims(self.a_norm,-1))[:,:,0]
       
-      #self.ent_w_pos_type = tf.einsum('aij,ajk->aik',self.ent_w
-      #                              ,tf.expand_dims(self.pos_types_a,-1))[:,0,0] #(batch_size,)
-      
-      self.pos_types_score =  tf.einsum('aij,ajk->aik',self.pos_types_embed,tf.transpose(self.ent_w,[0,2,1]))[:,:,0]  #(batch,max_pos_type,1)
-      
-      self.ent_w_pos_type = tf.reduce_sum(tf.multiply(self.a_norm,self.pos_types_score),-1)
-      
+      self.ent_w_pos_type = tf.einsum('aij,ajk->aik',self.ent_w
+                                    ,tf.expand_dims(self.pos_types_a,-1))[:,0,0] #(batch_size,)
+    
       self.ent_w_neg_type = tf.einsum('aij,ajk->aik',self.ent_w,
                                     tf.transpose(self.neg_types_embed,[0,2,1]))[:,0,:]
     
@@ -187,6 +181,7 @@ class FullHierEnergyRandom(Model):
     left_embed = tf.nn.embedding_lookup(self.reshape_input,self.entCtxLeftIndex)
     right_embed = tf.nn.embedding_lookup(self.reshape_input,self.entCtxRightIndex)
     
+    #weather to normalize the inputs...
     ent_embed = tf.nn.l2_normalize(ent_embed,-1)
     left_embed = tf.nn.l2_normalize(left_embed,-1)
     right_embed = tf.nn.l2_normalize(right_embed,-1)
@@ -198,14 +193,13 @@ class FullHierEnergyRandom(Model):
     input_f3,_,_,_ = self.layers['BiLSTM'](right_embed,tf.cast(self.ctxRightLent[:,0],tf.int32),self.keep_prob)
     
     
+    
     input_ctx_all = tf.concat([input_f2,input_f3],1)
     att_w_m = tf.einsum('aij,jk->aik',tf.expand_dims(input_f1,1),self.layers['att_weights']['h_m'])
-    att_w1 = tf.nn.tanh(tf.einsum('aij,jk->aik',input_ctx_all,self.layers['att_weights']['h1'])+att_w_m)
-    
-#    if self.args.datasets=='BBN':
-#      att_w1 = tf.nn.tanh(tf.einsum('aij,jk->aik',input_ctx_all,self.layers['att_weights']['h1'])+att_w_m)
-#    else:
-#      att_w1 = tf.nn.relu(tf.einsum('aij,jk->aik',input_ctx_all,self.layers['att_weights']['h1'])+att_w_m)
+    if self.args.datasets=='BBN':
+      att_w1 = tf.nn.tanh(tf.einsum('aij,jk->aik',input_ctx_all,self.layers['att_weights']['h1'])+att_w_m)
+    else:
+      att_w1 = tf.nn.relu(tf.einsum('aij,jk->aik',input_ctx_all,self.layers['att_weights']['h1'])+att_w_m)
     
     self.att_w2 = tf.nn.softmax(tf.einsum('aij,jk->aik',att_w1,self.layers['att_weights']['h2'])[:,:,0],-1)
     
